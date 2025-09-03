@@ -1,0 +1,990 @@
+apiVersion: v1
+kind: Dashboard
+metadata:
+  name: llm-d-comprehensive-monitoring
+  project: llm-d-monitoring
+spec:
+  display:
+    name: "LLM-D Platform Monitoring"
+    description: "Comprehensive monitoring dashboard for llm-d Kubernetes-native distributed LLM inference platform"
+  
+  # Global time configuration
+  duration: 1h
+  refreshInterval: 30s
+  
+  # Dashboard variables for dynamic filtering (v0.51.1 enhanced)
+  variables:
+    # NEW: Datasource variable for v0.51.1
+    - kind: ListVariable
+      spec:
+        name: datasource
+        display:
+          name: "Data Source"
+          description: "Select Prometheus datasource"
+        allowAllOption: false
+        allowMultipleSelection: false
+        plugin:
+          kind: StaticListVariable
+          spec:
+            values:
+              - prometheus-llm-d
+              - prometheus-backup
+    
+    - kind: ListVariable
+      spec:
+        name: cluster
+        display:
+          name: "Cluster"
+          description: "Select Kubernetes cluster"
+        allowAllOption: true
+        allowMultipleSelection: true
+        plugin:
+          kind: PrometheusLabelValuesVariable
+          spec:
+            labelName: cluster
+            matchers:
+              - __name__=~"llm_.*"
+            datasource:
+              name: "$datasource"
+    
+    - kind: ListVariable
+      spec:
+        name: namespace
+        display:
+          name: "Namespace"
+          description: "Select namespace"
+        allowAllOption: true
+        allowMultipleSelection: true
+        plugin:
+          kind: PrometheusLabelValuesVariable
+          spec:
+            labelName: namespace
+            matchers:
+              - __name__=~"llm_.*"
+              - cluster=~"$cluster"
+            datasource:
+              name: "$datasource"
+    
+    - kind: ListVariable
+      spec:
+        name: model
+        display:
+          name: "Model"
+          description: "Select LLM model"
+        allowAllOption: true
+        allowMultipleSelection: true
+        plugin:
+          kind: PrometheusLabelValuesVariable
+          spec:
+            labelName: model_name
+            matchers:
+              - __name__=~"llm_.*"
+              - cluster=~"$cluster"
+              - namespace=~"$namespace"
+            datasource:
+              name: "$datasource"
+    
+    - kind: ListVariable
+      spec:
+        name: instance
+        display:
+          name: "Instance"
+          description: "Select model instance"
+        allowAllOption: true
+        allowMultipleSelection: true
+        plugin:
+          kind: PrometheusLabelValuesVariable
+          spec:
+            labelName: instance
+            matchers:
+              - __name__=~"llm_.*"
+              - cluster=~"$cluster"
+              - namespace=~"$namespace"
+              - model_name=~"$model"
+            datasource:
+              name: "$datasource"
+
+  # Dashboard layout with panels organized by monitoring areas
+  panels:
+    #===========================================
+    # SYSTEM OVERVIEW SECTION
+    #===========================================
+    - kind: Panel
+      spec:
+        display:
+          name: "System Overview"
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: short
+            thresholds:
+              - color: "#1f77b4"
+                max: 80
+              - color: "#ff7f0e"
+                max: 95
+              - color: "#d62728"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'count(up{job=~"llm-d.*", cluster=~"$cluster", namespace=~"$namespace"} == 1)'
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Active Models"
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: short
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'count by (cluster, namespace) (llm_model_loaded{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"} == 1)'
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Total Requests/sec"
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: reqps
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum(rate(llm_requests_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m]))'
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "System Uptime"
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: s
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'avg(time() - process_start_time_seconds{job=~"llm-d.*", cluster=~"$cluster", namespace=~"$namespace"})'
+              
+    #===========================================
+    # PERFORMANCE METRICS SECTION  
+    #===========================================
+    - kind: Panel
+      spec:
+        display:
+          name: "Inference Latency Percentiles"
+          description: "P50, P95, P99 inference latency across all models"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: s
+              label: "Latency"
+            # NEW v0.51.1 feature: Panel zoom controls
+            zoom:
+              enabled: true
+              controls:
+                - zoomIn: true
+                - zoomOut: true
+                - resetZoom: true
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'histogram_quantile(0.50, rate(llm_inference_duration_seconds_bucket{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m]))'
+              seriesNameTemplate: "P50"
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'histogram_quantile(0.95, rate(llm_inference_duration_seconds_bucket{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m]))'
+              seriesNameTemplate: "P95"
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'histogram_quantile(0.99, rate(llm_inference_duration_seconds_bucket{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m]))'
+              seriesNameTemplate: "P99"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Throughput - Requests/sec by Model"
+          description: "Request throughput per model instance"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: reqps
+              label: "Requests/sec"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum by (model_name, instance) (rate(llm_requests_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model", instance=~"$instance"}[5m]))'
+              seriesNameTemplate: "{{model_name}} - {{instance}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Token Generation Rate"
+          description: "Tokens generated per second across all models"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: tps
+              label: "Tokens/sec"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum by (model_name) (rate(llm_tokens_generated_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m]))'
+              seriesNameTemplate: "{{model_name}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Request Queue Depth"
+          description: "Number of pending inference requests"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: short
+              label: "Queue Size"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum by (model_name, instance) (llm_queue_size{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model", instance=~"$instance"})'
+              seriesNameTemplate: "{{model_name}} - {{instance}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Model Load Time"
+          description: "Time taken to load/reload models"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: s
+              label: "Load Time"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'llm_model_load_duration_seconds{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}'
+              seriesNameTemplate: "{{model_name}} - {{instance}}"
+              
+    #===========================================
+    # RESOURCE UTILIZATION SECTION
+    #===========================================
+    - kind: Panel
+      spec:
+        display:
+          name: "GPU Utilization"
+          description: "GPU usage percentage across all nodes"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: percent
+              label: "GPU Usage %"
+              min: 0
+              max: 100
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'avg by (node, gpu_id) (DCGM_FI_DEV_GPU_UTIL{cluster=~"$cluster", namespace=~"$namespace"})'
+              seriesNameTemplate: "{{node}} GPU-{{gpu_id}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "GPU Memory Usage"
+          description: "GPU memory utilization by node and GPU"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: bytes
+              label: "Memory Usage"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'DCGM_FI_DEV_FB_USED{cluster=~"$cluster", namespace=~"$namespace"} * 1024 * 1024'
+              seriesNameTemplate: "{{node}} GPU-{{gpu}} Used"
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'DCGM_FI_DEV_FB_FREE{cluster=~"$cluster", namespace=~"$namespace"} * 1024 * 1024'
+              seriesNameTemplate: "{{node}} GPU-{{gpu}} Free"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "GPU Temperature"
+          description: "GPU temperature monitoring"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: celsius
+              label: "Temperature (°C)"
+            thresholds:
+              - color: "#1f77b4"
+                max: 70
+              - color: "#ff7f0e"
+                max: 85
+              - color: "#d62728"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'DCGM_FI_DEV_GPU_TEMP{cluster=~"$cluster", namespace=~"$namespace"}'
+              seriesNameTemplate: "{{node}} GPU-{{gpu}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "CPU Usage by Node"
+          description: "CPU utilization across cluster nodes"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: percent
+              label: "CPU Usage %"
+              min: 0
+              max: 100
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: '100 - (avg by (node) (irate(node_cpu_seconds_total{mode="idle", cluster=~"$cluster"}[5m])) * 100)'
+              seriesNameTemplate: "{{node}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Memory Usage by Node"
+          description: "Memory utilization across cluster nodes"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: bytes
+              label: "Memory"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'node_memory_MemTotal_bytes{cluster=~"$cluster"} - node_memory_MemAvailable_bytes{cluster=~"$cluster"}'
+              seriesNameTemplate: "{{node}} Used"
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'node_memory_MemAvailable_bytes{cluster=~"$cluster"}'
+              seriesNameTemplate: "{{node}} Available"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Model Cache Storage"
+          description: "Storage usage for model cache across nodes"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: bytes
+              label: "Storage"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'llm_model_cache_size_bytes{cluster=~"$cluster", namespace=~"$namespace"}'
+              seriesNameTemplate: "{{node}} Cache"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Network Traffic"
+          description: "Network I/O between llm-d nodes"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: Bps
+              label: "Network I/O"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'rate(node_network_receive_bytes_total{device!~"lo|docker.*|veth.*", cluster=~"$cluster"}[5m])'
+              seriesNameTemplate: "{{node}} RX"
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'rate(node_network_transmit_bytes_total{device!~"lo|docker.*|veth.*", cluster=~"$cluster"}[5m])'
+              seriesNameTemplate: "{{node}} TX"
+              
+    #===========================================
+    # COST & EFFICIENCY SECTION
+    #===========================================
+    - kind: Panel
+      spec:
+        display:
+          name: "Token Cost Rate"
+          description: "Token generation cost per second"
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: $/s
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum(rate(llm_tokens_generated_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m])) * on() group_left() llm_token_cost_per_thousand'
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Resource Cost Breakdown"
+          description: "Cost breakdown by resource type"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: $/hr
+              label: "Cost/Hour"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum by (resource_type) (llm_resource_cost_per_hour{cluster=~"$cluster", namespace=~"$namespace"})'
+              seriesNameTemplate: "{{resource_type}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Efficiency - Tokens per Dollar"
+          description: "Cost efficiency metric for token generation"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: "tokens/$"
+              label: "Efficiency"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'rate(llm_tokens_generated_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m]) / (rate(llm_resource_cost_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m]) / 3600)'
+              seriesNameTemplate: "{{model_name}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Hardware Utilization Rate"
+          description: "Overall hardware utilization efficiency"
+        plugin:
+          kind: GaugeChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: percent
+            thresholds:
+              - color: "#d62728"
+                max: 50
+              - color: "#ff7f0e"
+                max: 75
+              - color: "#2ca02c"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'avg(avg by (node) (DCGM_FI_DEV_GPU_UTIL{cluster=~"$cluster", namespace=~"$namespace"}) + avg by (node) (100 - (irate(node_cpu_seconds_total{mode="idle", cluster=~"$cluster"}[5m]) * 100))) / 2'
+              
+    #===========================================
+    # QUALITY & RELIABILITY SECTION
+    #===========================================
+    - kind: Panel
+      spec:
+        display:
+          name: "Error Rate"
+          description: "HTTP error rates (4xx/5xx) for llm-d services"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: percent
+              label: "Error Rate %"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum(rate(llm_requests_total{cluster=~"$cluster", namespace=~"$namespace", status_code=~"4..", model_name=~"$model"}[5m])) / sum(rate(llm_requests_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m])) * 100'
+              seriesNameTemplate: "4xx Errors"
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum(rate(llm_requests_total{cluster=~"$cluster", namespace=~"$namespace", status_code=~"5..", model_name=~"$model"}[5m])) / sum(rate(llm_requests_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m])) * 100'
+              seriesNameTemplate: "5xx Errors"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Model Health Status"
+          description: "Health status of all deployed models"
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: short
+            thresholds:
+              - color: "#d62728"
+                max: 0
+              - color: "#2ca02c"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum(llm_model_healthy{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"} == 1)'
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Service Availability (SLA)"
+          description: "Service availability percentage over time window"
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: percent
+            thresholds:
+              - color: "#d62728"
+                max: 99
+              - color: "#ff7f0e"
+                max: 99.9
+              - color: "#2ca02c"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'avg_over_time(up{job=~"llm-d.*", cluster=~"$cluster", namespace=~"$namespace"}[1h]) * 100'
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Mean Time To Recovery (MTTR)"
+          description: "Average time to recover from failures"
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: s
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'avg(llm_failure_recovery_time_seconds{cluster=~"$cluster", namespace=~"$namespace"})'
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "Load Balancer Health"
+          description: "Health status of load balancers"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: short
+              label: "Healthy Backends"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum by (load_balancer) (llm_lb_healthy_backends{cluster=~"$cluster", namespace=~"$namespace"})'
+              seriesNameTemplate: "{{load_balancer}}"
+              
+    #===========================================
+    # vLLM INTEGRATION SECTION
+    #===========================================
+    - kind: Panel
+      spec:
+        display:
+          name: "vLLM Engine Status"
+          description: "Status of vLLM inference engines"
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: lastNumber
+            format:
+              unit: short
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'count(vllm_engine_running{cluster=~"$cluster", namespace=~"$namespace"} == 1)'
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "vLLM Memory Management"
+          description: "vLLM KV cache and memory utilization"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: bytes
+              label: "Memory"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'vllm_cache_size_bytes{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}'
+              seriesNameTemplate: "KV Cache - {{model_name}}"
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'vllm_memory_pool_size_bytes{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}'
+              seriesNameTemplate: "Memory Pool - {{model_name}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "vLLM Batch Processing"
+          description: "vLLM batch size and processing efficiency"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: short
+              label: "Batch Size"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'avg by (model_name) (vllm_batch_size{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"})'
+              seriesNameTemplate: "{{model_name}}"
+              
+    - kind: Panel
+      spec:
+        display:
+          name: "vLLM Serving Efficiency" 
+          description: "Tokens per second efficiency for vLLM engines"
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              unit: tps
+              label: "Tokens/sec"
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              query: 'sum by (model_name) (rate(vllm_tokens_generated_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m]))'
+              seriesNameTemplate: "{{model_name}}"
+
+    #===========================================
+    # NEW v0.51.1 FEATURES - TABLE WITH PAGINATION
+    #===========================================
+    - kind: Panel
+      spec:
+        display:
+          name: "Model Performance Summary"
+          description: "Comprehensive table showing model performance metrics with pagination"
+        plugin:
+          kind: Table
+          spec:
+            # NEW v0.51.1 feature: Table pagination
+            pagination:
+              enabled: true
+              itemsPerPage: 10
+            # Column definitions
+            columns:
+              - header: "Model Name"
+                cellType: text
+                width: 200
+              - header: "RPS"
+                cellType: number
+                unit: reqps
+                width: 100
+              - header: "P95 Latency"
+                cellType: number
+                unit: ms
+                width: 120
+              - header: "Error Rate"
+                cellType: percent
+                width: 100
+              - header: "Cost/1K Tokens"
+                cellType: currency
+                width: 120
+        queries:
+          - kind: TableQuery
+            spec:
+              query: |
+                label_replace(
+                  (
+                    sum by (model_name) (rate(llm_requests_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m])) or vector(0)
+                  ), "metric", "rps", "", ""
+                )
+                or 
+                label_replace(
+                  (
+                    histogram_quantile(0.95, rate(llm_inference_duration_seconds_bucket{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m])) * 1000 or vector(0)
+                  ), "metric", "p95_latency", "", ""
+                )
+                or
+                label_replace(
+                  (
+                    sum by (model_name) (rate(llm_requests_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model", status_code=~"[45].."}[5m])) / 
+                    sum by (model_name) (rate(llm_requests_total{cluster=~"$cluster", namespace=~"$namespace", model_name=~"$model"}[5m])) * 100 or vector(0)
+                  ), "metric", "error_rate", "", ""
+                )
+
+  # Layout configuration for organized panel display
+  layouts:
+    - kind: Grid
+      spec:
+        display:
+          title: "System Overview"
+          collapse:
+            open: true
+        items:
+          - x: 0
+            y: 0
+            width: 6
+            height: 4
+            content:
+              $ref: "#/spec/panels/0"
+          - x: 6
+            y: 0
+            width: 6
+            height: 4
+            content:
+              $ref: "#/spec/panels/1"
+          - x: 12
+            y: 0
+            width: 6
+            height: 4
+            content:
+              $ref: "#/spec/panels/2"
+          - x: 18
+            y: 0
+            width: 6
+            height: 4
+            content:
+              $ref: "#/spec/panels/3"
+              
+    - kind: Grid
+      spec:
+        display:
+          title: "Performance Metrics"
+          collapse:
+            open: true
+        items:
+          - x: 0
+            y: 4
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/4"
+          - x: 12
+            y: 4
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/5"
+          - x: 0
+            y: 12
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/6"
+          - x: 12
+            y: 12
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/7"
+          - x: 0
+            y: 20
+            width: 24
+            height: 8
+            content:
+              $ref: "#/spec/panels/8"
+              
+    - kind: Grid
+      spec:
+        display:
+          title: "Resource Utilization"
+          collapse:
+            open: true
+        items:
+          - x: 0
+            y: 28
+            width: 8
+            height: 8
+            content:
+              $ref: "#/spec/panels/9"
+          - x: 8
+            y: 28
+            width: 8
+            height: 8
+            content:
+              $ref: "#/spec/panels/10"
+          - x: 16
+            y: 28
+            width: 8
+            height: 8
+            content:
+              $ref: "#/spec/panels/11"
+          - x: 0
+            y: 36
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/12"
+          - x: 12
+            y: 36
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/13"
+          - x: 0
+            y: 44
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/14"
+          - x: 12
+            y: 44
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/15"
+              
+    - kind: Grid
+      spec:
+        display:
+          title: "Cost & Efficiency"
+          collapse:
+            open: false
+        items:
+          - x: 0
+            y: 52
+            width: 6
+            height: 4
+            content:
+              $ref: "#/spec/panels/16"
+          - x: 6
+            y: 52
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/17"
+          - x: 18
+            y: 52
+            width: 6
+            height: 8
+            content:
+              $ref: "#/spec/panels/19"
+          - x: 0
+            y: 60
+            width: 18
+            height: 8
+            content:
+              $ref: "#/spec/panels/18"
+              
+    - kind: Grid
+      spec:
+        display:
+          title: "Quality & Reliability"
+          collapse:
+            open: false
+        items:
+          - x: 0
+            y: 68
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/20"
+          - x: 12
+            y: 68
+            width: 6
+            height: 4
+            content:
+              $ref: "#/spec/panels/21"
+          - x: 18
+            y: 68
+            width: 6
+            height: 4
+            content:
+              $ref: "#/spec/panels/22"
+          - x: 12
+            y: 72
+            width: 6
+            height: 4
+            content:
+              $ref: "#/spec/panels/23"
+          - x: 18
+            y: 72
+            width: 6
+            height: 8
+            content:
+              $ref: "#/spec/panels/24"
+              
+    - kind: Grid
+      spec:
+        display:
+          title: "vLLM Integration"
+          collapse:
+            open: false
+        items:
+          - x: 0
+            y: 76
+            width: 6
+            height: 4
+            content:
+              $ref: "#/spec/panels/25"
+          - x: 6
+            y: 76
+            width: 18
+            height: 8
+            content:
+              $ref: "#/spec/panels/26"
+          - x: 0
+            y: 84
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/27"
+          - x: 12
+            y: 84
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/28"

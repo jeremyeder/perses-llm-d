@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: Project
+metadata:
+  name: llm-d-monitoring
+spec:
+  display:
+    name: "LLM-D Platform Monitoring"
+    description: "Comprehensive monitoring project for llm-d Kubernetes-native distributed LLM inference platform"
+  
+  # Security and access control
+  security:
+    permissions:
+      - subjects:
+          - kind: User
+            name: "llm-d-admin"
+          - kind: Group
+            name: "sre-team"
+          - kind: Group
+            name: "platform-engineers"
+        permissions:
+          - "read"
+          - "write"
+          - "admin"
+      
+      - subjects:
+          - kind: Group
+            name: "developers"
+        permissions:
+          - "read"
+      
+      - subjects:
+          - kind: ServiceAccount
+            name: "prometheus-operator"
+            namespace: "monitoring"
+        permissions:
+          - "read"
+  
+  # Project-level settings
+  settings:
+    # Default refresh interval for all dashboards
+    refreshInterval: 30s
+    
+    # Default time range
+    defaultTimeRange: 1h
+    
+    # Data retention policy
+    dataRetention: 
+      duration: 30d
+      
+    # Alerting configuration
+    alerting:
+      enabled: true
+      defaultSeverity: "warning"
+      escalationPolicy:
+        - severity: "critical"
+          channels: ["pagerduty", "slack-critical"]
+        - severity: "warning"
+          channels: ["slack-alerts"]
+        - severity: "info"
+          channels: ["slack-info"]
+    
+    # Export and backup settings
+    backup:
+      enabled: true
+      schedule: "0 2 * * *"  # Daily at 2 AM
+      retention: "90d"
+      
+    # Integration settings
+    integrations:
+      grafana:
+        enabled: true
+        url: "https://grafana.example.com"
+        datasourceUid: "prometheus-llm-d"
+      
+      jaeger:
+        enabled: true
+        url: "https://jaeger.example.com"
+        
+      openshift:
+        enabled: true
+        consoleUrl: "https://console-openshift-console.apps.cluster.example.com"
